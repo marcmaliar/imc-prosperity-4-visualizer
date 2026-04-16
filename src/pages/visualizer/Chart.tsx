@@ -5,8 +5,9 @@ import HighchartsOfflineExporting from 'highcharts/modules/offline-exporting';
 import HighchartsHighContrastDarkTheme from 'highcharts/themes/high-contrast-dark';
 import HighchartsReact from 'highcharts-react-official';
 import merge from 'lodash/merge';
-import { ReactNode, useMemo } from 'react';
+import { ReactNode, useEffect, useMemo, useRef } from 'react';
 import { useActualColorScheme } from '../../hooks/use-actual-color-scheme.ts';
+import { useStore } from '../../store.ts';
 import { formatNumber } from '../../utils/format.ts';
 import { VisualizerCard } from './VisualizerCard.tsx';
 
@@ -52,6 +53,13 @@ interface ChartProps {
 
 export function Chart({ title, options, series, min, max }: ChartProps): ReactNode {
   const colorScheme = useActualColorScheme();
+  const algorithm = useStore(state => state.algorithm);
+  const timestamp = useStore(state => state.timestamp);
+  const viewCenter = useStore(state => state.viewCenter);
+  const ticksWindow = useStore(state => state.ticksWindow);
+
+  const chartRef = useRef<HighchartsReact.RefObject>(null);
+  const prevViewCenter = useRef(viewCenter);
 
   const fullOptions = useMemo((): Highcharts.Options => {
     const themeOptions = colorScheme === 'light' ? {} : getThemeOptions(HighchartsHighContrastDarkTheme);
@@ -61,13 +69,16 @@ export function Chart({ title, options, series, min, max }: ChartProps): ReactNo
         animation: false,
         height: 400,
         zooming: {
-          type: 'x',
+          type: false as any,
+          mouseWheel: {
+            enabled: true,
+            type: 'xy',
+          },
         },
         panning: {
           enabled: true,
-          type: 'x',
+          type: 'xy',
         },
-        panKey: 'shift',
         numberFormatter: formatNumber,
         events: {
           load() {
@@ -76,17 +87,17 @@ export function Chart({ title, options, series, min, max }: ChartProps): ReactNo
                 return true;
               }
 
-              let timestamp = e.labelConfig.point.x;
+              let currentTimestamp = e.labelConfig.point.x;
 
               if (e.labelConfig.point.dataGroup) {
                 const xData = e.labelConfig.series.xData;
                 const lastTimestamp = xData[xData.length - 1];
-                if (timestamp + 100 * e.labelConfig.point.dataGroup.length >= lastTimestamp) {
-                  timestamp = lastTimestamp;
+                if (currentTimestamp + 100 * e.labelConfig.point.dataGroup.length >= lastTimestamp) {
+                  currentTimestamp = lastTimestamp;
                 }
               }
 
-              e.text = `Timestamp ${formatNumber(timestamp)}<br/>`;
+              e.text = `Timestamp ${formatNumber(currentTimestamp)}<br/>`;
               return false;
             });
           },
@@ -118,6 +129,7 @@ export function Chart({ title, options, series, min, max }: ChartProps): ReactNo
       },
       xAxis: {
         type: 'datetime',
+        ordinal: false,
         title: {
           text: 'Timestamp',
         },
@@ -158,9 +170,59 @@ export function Chart({ title, options, series, min, max }: ChartProps): ReactNo
     return merge(themeOptions, chartOptions);
   }, [colorScheme, title, options, series, min, max]);
 
+  useEffect(() => {
+    let rafId: number;
+
+    if (chartRef.current && chartRef.current.chart) {
+      const chart = chartRef.current.chart;
+
+      const timestampStep = algorithm && algorithm.data.length > 1 
+        ? algorithm.data[1].state.timestamp - algorithm.data[0].state.timestamp 
+        : 100;
+
+      if (ticksWindow > 0) {
+        chart.xAxis[0].setExtremes(
+          viewCenter - ticksWindow * timestampStep,
+          viewCenter + ticksWindow * timestampStep,
+          false, // defer redraw
+          false  // no animation
+        );
+      } else {
+        chart.xAxis[0].setExtremes(undefined, undefined, false, false);
+      }
+
+      if (Math.abs(viewCenter - prevViewCenter.current) > timestampStep) {
+        chart.yAxis.forEach(y => y.setExtremes(undefined, undefined, false, false));
+      }
+      prevViewCenter.current = viewCenter;
+
+      chart.xAxis[0].removePlotLine('timestamp-line');
+      chart.xAxis[0].addPlotLine({
+        id: 'timestamp-line',
+        value: timestamp,
+        color: 'red',
+        dashStyle: 'Dash',
+        width: 2,
+        zIndex: 5
+      });
+
+      rafId = requestAnimationFrame(() => chart.redraw());
+    }
+
+    return () => {
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+      }
+    };
+  }, [timestamp, viewCenter, ticksWindow, algorithm]);
+
+  const chartComponent = useMemo(() => {
+    return <HighchartsReact ref={chartRef} highcharts={Highcharts} constructorType={'stockChart'} options={fullOptions} />;
+  }, [fullOptions]);
+
   return (
     <VisualizerCard p={0}>
-      <HighchartsReact highcharts={Highcharts} constructorType={'stockChart'} options={fullOptions} immutable />
+      {chartComponent}
     </VisualizerCard>
   );
 }
