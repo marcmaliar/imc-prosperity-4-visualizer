@@ -268,11 +268,78 @@ function getAlgorithmData(logLines: string[]): AlgorithmDataRow[] {
   return rows;
 }
 
+function getTradeHistory(logLines: string[]): Trade[] {
+  const headerIndex = logLines.indexOf('Trade History:');
+  if (headerIndex === -1) {
+    return [];
+  }
+
+  const tradeHistoryLines: string[] = [];
+  let bracketDepth = 0;
+  let started = false;
+
+  for (let i = headerIndex + 1; i < logLines.length; i++) {
+    const line = logLines[i];
+    if (!started && line.trim() === '') {
+      continue;
+    }
+
+    const trimmedLine = line.trim();
+    if (!started && !trimmedLine.startsWith('[')) {
+      continue;
+    }
+
+    started = true;
+    tradeHistoryLines.push(line);
+
+    for (const char of line) {
+      if (char === '[') {
+        bracketDepth++;
+      } else if (char === ']') {
+        bracketDepth--;
+      }
+    }
+
+    if (started && bracketDepth <= 0) {
+      break;
+    }
+  }
+
+  if (tradeHistoryLines.length === 0) {
+    return [];
+  }
+
+  const rawTradeHistory = tradeHistoryLines.join('\n');
+  const normalizedTradeHistory = rawTradeHistory.replace(/,\s*([}\]])/g, '$1');
+
+  try {
+    const tradeHistory = JSON.parse(normalizedTradeHistory) as Trade[];
+    return tradeHistory.map(trade => ({
+      symbol: trade.symbol,
+      price: Number(trade.price),
+      quantity: Number(trade.quantity),
+      buyer: trade.buyer,
+      seller: trade.seller,
+      timestamp: Number(trade.timestamp),
+    }));
+  } catch {
+    throw new AlgorithmParseError(
+      (
+        <>
+          <Text>Logs are in invalid format. Could not parse Trade History block.</Text>
+          <Text>{rawTradeHistory}</Text>
+        </>
+      ),
+    );
+  }
+}
+
 export function parseAlgorithmLogs(logs: string, summary?: AlgorithmSummary): Algorithm {
   const logLines = logs.trim().split(/\r?\n/);
 
   const activityLogs = getActivityLogs(logLines);
   const data = getAlgorithmData(logLines);
+  const tradeHistory = getTradeHistory(logLines);
 
   if (activityLogs.length === 0 && data.length === 0) {
     throw new AlgorithmParseError(
@@ -296,6 +363,7 @@ export function parseAlgorithmLogs(logs: string, summary?: AlgorithmSummary): Al
     summary,
     activityLogs,
     data,
+    tradeHistory,
   };
 }
 
